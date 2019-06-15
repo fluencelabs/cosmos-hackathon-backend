@@ -1,2 +1,22 @@
 *.class
 *.log
+
+# Scala compiled
+target/
+
+# Python compiled
+*.pyc
+
+# IntelliJ
+.idea
+.vscode
+*.iml
+
+# MacOS folder metadata
+.DS_Store
+
+# Text writing
+*.scriv
+
+# Temp
+docs/checklist.md
