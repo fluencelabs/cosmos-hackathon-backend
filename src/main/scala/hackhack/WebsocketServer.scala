@@ -83,7 +83,8 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
       case (GET | POST) -> Root / "create" / key =>
         val stream =
           fs2.Stream
-            .eval(Sync[F].delay(Files.createTempFile("websocket", key)))
+//            .eval(Sync[F].delay(Files.createTempFile("websocket", key)))
+            .eval(Sync[F].delay(Paths.get("/tmp/docker.log")))
             .evalTap(path => Sync[F].delay(println(s"created $path")))
             .flatMap(FileStream.stream[F])
             .map(Event(_))
