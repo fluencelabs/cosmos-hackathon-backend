@@ -5,20 +5,21 @@ import java.util.concurrent.Executors
 
 import cats.data.EitherT
 import cats.effect._
-import cats.effect.concurrent.Ref
+import cats.effect.concurrent.{Deferred, Ref}
 import cats.syntax.applicativeError._
-import cats.syntax.option._
+import cats.syntax.either._
+import cats.syntax.flatMap._
 import cats.syntax.functor._
-import cats.{Defer, Monad}
+import cats.{Applicative, Defer, Monad}
 import hackhack.docker.params.{DockerImage, DockerParams}
-import hackhack.ipfs.{IpfsError, IpfsStore}
-import scodec.bits.ByteVector
+import io.circe.Json
+import io.circe.parser.parse
 
 import scala.concurrent.ExecutionContext
 import scala.language.{higherKinds, postfixOps}
+import scala.sys.process._
 
 case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
-    ipfsStore: IpfsStore[F],
     lastPort: Ref[F, Short],
     blockingCtx: ExecutionContext =
       ExecutionContext.fromExecutorService(Executors.newCachedThreadPool())
@@ -26,13 +27,12 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
 
 //  nsd --log_level "debug" start --moniker stage-02 --address tcp://0.0.0.0:26658 --p2p.laddr tcp://0.0.0.0:26656 --rpc.laddr tcp://0.0.0.0:26657 --p2p.persistent_peers d53cf2cb91514edb41441503e8a11f004023f2ee@207.154.210.151:26656
 
+  val ContainerImage = "cosmos-runner"
+
   private def nextPortThousand =
     lastPort.modify(p => (p + 1 toShort, p * 1000 toShort))
 
-  private def dockerCmd(image: String,
-                        name: String,
-                        peer: String,
-                        binaryPath: Path) =
+  private def dockerCmd(name: String, peer: String, binaryPath: Path) =
     for {
       portThousand <- nextPortThousand
       process = DockerParams
@@ -43,31 +43,51 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
         .option("--name", name)
         .option("-e", s"PEER=$peer") //TODO: Add $PEER usage to docker script
         .volume(binaryPath.toAbsolutePath.toString, "/binary") //TODO: download binary from IPFS
-        .prepared(DockerImage(image, "latest"))
+        .prepared(DockerImage(ContainerImage, "latest"))
         .daemonRun()
         .process
     } yield process
 
-  def fetchTo(hash: ByteVector, dest: Path): EitherT[F, IpfsError, Unit] = {
-    ipfsStore
-      .fetch(hash)
-      .flatMap(
-        _.flatMap(bb ⇒ fs2.Stream.chunk(fs2.Chunk.byteBuffer(bb)))
-          .through(fs2.io.file.writeAll[F](dest, blockingCtx))
-          .compile
-          .drain
-          .attemptT
-          .leftMap(e => IpfsError("fetchTo", e.some))
+  private def getLogPath(containerId: String): EitherT[F, Throwable, Path] =
+    EitherT(IO(s"docker inspect $containerId".!!).attempt.to[F])
+      .subflatMap(inspect => parse(inspect))
+      .subflatMap(
+        _.asArray
+          .flatMap(_.headOption)
+          .fold(
+            new Exception(s"Can't parse array from docker inspect $containerId")
+              .asLeft[Json]
+          )(_.asRight)
       )
-  }
+      .subflatMap(_.as[String])
+      .flatMap(p => EitherT(IO(Paths.get(p)).attempt.to[F]))
 
-  def run(image: String, name: String, peer: String, ipfsHash: ByteVector) =
-//    for {
-//      path <- EitherT(IO(Paths.get(s"/tmp/$name")).attempt.to[F])
-//      binary <- fetchTo(ipfsHash, path)
-//      container <- EitherT.liftF(
-//        Concurrent[F].start(IO(dockerCmd(image, name, peer, path)).to[F]))
-//    } yield ???
-  ???
+  private def log(str: String) = IO(println(str)).to[F]
+
+  def run(name: String,
+          peer: String,
+          binaryPath: Path): EitherT[F, Throwable, fs2.Stream[F, String]] = {
+    val container = for {
+      cmd <- dockerCmd(name, peer, binaryPath)
+      _ <- log(s"$name got dockerCmd")
+      idPromise <- Deferred[F, String]
+      _ <- Concurrent[F].start(
+        IO(cmd.!!).attempt
+          .onError {
+            case e => IO(println(s"Failed to run container $name: $e"))
+          }
+          .to[F]
+          .flatMap(_.fold(_ => Applicative[F].unit, idPromise.complete)))
+      _ <- log(s"$name signaled docker container to start")
+      containerId <- idPromise.get
+      _ <- log(s"$name docker container started $containerId")
+    } yield containerId
+
+    for {
+      containerId <- EitherT.liftF(container)
+      logPath <- getLogPath(containerId)
+      stream = FileStream.stream[F](logPath)
+    } yield stream
+  }
 
 }
