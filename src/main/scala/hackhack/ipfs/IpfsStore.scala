@@ -18,7 +18,7 @@ package hackhack.ipfs
 
 import java.nio.ByteBuffer
 
-import cats.Monad
+import cats.{Functor, Monad}
 import cats.data.EitherT
 import com.softwaremill.sttp.{SttpBackend, Uri}
 import scodec.bits.ByteVector
@@ -30,19 +30,10 @@ import scala.language.higherKinds
   *
   * @param client to interact with IPFS nodes
   */
-class IpfsStore[F[_]](client: IpfsClient[F]) {
+class IpfsStore[F[_]: Functor](client: IpfsClient[F]) {
   def fetch(
       hash: ByteVector): EitherT[F, IpfsError, fs2.Stream[F, ByteBuffer]] =
-    client.download(hash)
-
-  /**
-    * Returns hash of files from directory.
-    * If hash belongs to file, returns the same hash.
-    *
-    * @param hash Content's hash
-    */
-  def ls(hash: ByteVector): EitherT[F, IpfsError, List[ByteVector]] =
-    client.ls(hash)
+    client.download(hash).leftMap(e => IpfsError("fetch", Some(e)))
 }
 
 object IpfsStore {

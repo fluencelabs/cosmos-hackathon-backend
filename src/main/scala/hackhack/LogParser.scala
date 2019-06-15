@@ -1,8 +1,11 @@
 package hackhack
 
-import scala.language.higherKinds
+import io.circe.{Decoder, Encoder}
+import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
+import cats.syntax.option._
 
-case class Log(height: Long, hash: String, expectedHash: Option[String], correct: Boolean)
+import scala.language.higherKinds
+import scala.util.Try
 
 class LogParser[F[_]] {
   def stream: fs2.Stream[F, Log] = ???

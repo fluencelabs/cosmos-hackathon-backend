@@ -7,6 +7,7 @@ import cats.data.EitherT
 import cats.effect._
 import cats.effect.concurrent.Ref
 import cats.syntax.applicativeError._
+import cats.syntax.option._
 import cats.syntax.functor._
 import cats.{Defer, Monad}
 import hackhack.docker.params.{DockerImage, DockerParams}
@@ -16,8 +17,7 @@ import scodec.bits.ByteVector
 import scala.concurrent.ExecutionContext
 import scala.language.{higherKinds, postfixOps}
 
-case class Runner[
-    F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent: ContextShift](
+case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
     ipfsStore: IpfsStore[F],
     lastPort: Ref[F, Short],
     blockingCtx: ExecutionContext =
@@ -53,19 +53,21 @@ case class Runner[
       .fetch(hash)
       .flatMap(
         _.flatMap(bb ⇒ fs2.Stream.chunk(fs2.Chunk.byteBuffer(bb)))
-          .through(fs2.io.file.writeAll(dest, blockingCtx))
+          .through(fs2.io.file.writeAll[F](dest, blockingCtx))
           .compile
           .drain
           .attemptT
+          .leftMap(e => IpfsError("fetchTo", e.some))
       )
   }
 
   def run(image: String, name: String, peer: String, ipfsHash: ByteVector) =
-    for {
-      path <- EitherT(IO(Paths.get(s"/tmp/$name")).attempt.to[F])
-      binary <- fetchTo(ipfsHash, path)
-      container <- EitherT.liftF(
-        Concurrent[F].start(IO(dockerCmd(image, name, peer, path)).to[F]))
-    } yield ???
+//    for {
+//      path <- EitherT(IO(Paths.get(s"/tmp/$name")).attempt.to[F])
+//      binary <- fetchTo(ipfsHash, path)
+//      container <- EitherT.liftF(
+//        Concurrent[F].start(IO(dockerCmd(image, name, peer, path)).to[F]))
+//    } yield ???
+  ???
 
 }

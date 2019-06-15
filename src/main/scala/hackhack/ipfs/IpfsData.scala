@@ -21,7 +21,6 @@ import java.nio.file.{Files, Path}
 import cats.Monad
 import cats.data.EitherT
 import com.softwaremill.sttp.{Multipart, _}
-import fluence.effects.ipfs.IpfsClient.assert
 import scodec.bits.ByteVector
 
 import scala.collection.immutable
@@ -33,6 +32,10 @@ trait IpfsData[A] {
 }
 
 object IpfsData {
+
+  import IpfsClient._
+  import IpfsLsResponse._
+  import ResponseOps._
 
   implicit val chunksData: IpfsData[List[ByteVector]] = new IpfsData[List[ByteVector]] {
 

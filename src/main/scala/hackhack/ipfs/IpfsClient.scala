@@ -51,8 +51,7 @@ object ResponseOps {
 }
 
 class IpfsClient[F[_]: Monad](ipfsUri: Uri)(
-    implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?],
-                                      fs2.Stream[F, ByteBuffer]]
+    implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?], fs2.Stream[F, ByteBuffer]]
 ) {
 
   import IpfsClient._
@@ -80,177 +79,22 @@ class IpfsClient[F[_]: Monad](ipfsUri: Uri)(
   private def fromAddress(str: String): Either[String, ByteVector] =
     ByteVector.fromBase58Descriptive(str).map(_.drop(2))
 
-  private def lsCall(
-      hash: ByteVector): EitherT[F, IpfsError, IpfsLsResponse] = {
-    val address = toAddress(hash)
-    val uri = LsUri.param("arg", address)
-    for {
-      _ <- EitherT.pure[F, IpfsError](println(s"IPFS `ls` started $uri"))
-      response <- sttp
-        .response(asJson[IpfsLsResponse])
-        .get(uri)
-        .send()
-        .toEitherT { er =>
-          val errorMessage = s"IPFS 'ls' error $uri: $er"
-          IpfsError(errorMessage)
-        }
-        .subflatMap(_.left.map { er =>
-          println(s"IPFS 'ls' deserialization error: $er")
-          IpfsError(s"IPFS 'ls' deserialization error $uri", Some(er.error))
-        })
-        .map { r =>
-          println(s"IPFS 'ls' finished $uri")
-          r
-        }
-        .leftMap(identity[IpfsError])
-    } yield response
-  }
-
   /**
-    * Generates URI for uploading to IPFS.
-    *
-    * @param onlyHash If true, IPFS will calculates the hash, without saving a data to IPFS
-    * @param canBeMultiple If true, IPFS will wrap the list of files with directory and return a hash of this directory
-    * @return
-    */
-  private def uploadUri(onlyHash: Boolean, canBeMultiple: Boolean) = {
-    val multipleStr = canBeMultiple.toString
-    UploadUri
-      .queryFragment(KeyValue("pin", "true"))
-      .queryFragment(KeyValue("path", ""))
-      .queryFragment(KeyValue("only-hash", onlyHash.toString))
-      .queryFragment(KeyValue("recursive", multipleStr))
-      .queryFragment(KeyValue("wrap-with-directory", multipleStr))
-  }
-
-  /**
-    * `add` operation. Wraps files with a directory if there are multiple files.
-    *
-    * @param data uploads to IPFS
-    * @param onlyHash If true, only calculates the hash, without saving a data to IPFS
-    */
-  private def add[A: IpfsData](
-      data: A,
-      onlyHash: Boolean
-  ): EitherT[F, IpfsError, ByteVector] = {
-    val uri = uploadUri(onlyHash, IpfsData[A].wrapInDirectory)
-    for {
-      _ <- EitherT.pure[F, IpfsError](println(s"IPFS 'add' started $uri"))
-      multiparts <- IpfsData[A].toMultipart[F](data)
-      responses <- addCall(uri, multiparts)
-      _ <- assert[F](responses.nonEmpty, "IPFS 'add': Empty response")
-      hash <- EitherT.fromEither[F](getParentHash(responses))
-    } yield hash
-  }
-
-  /**
-    * HTTP call to add multiparts to IPFS.
-    *
-    */
-  private def addCall(uri: Uri, multiparts: immutable.Seq[Multipart])
-    : EitherT[F, IpfsError, List[UploadResponse]] =
-    // raw response: {upload-response-object}\n{upload-response-object}...
-    sttp
-      .response(asListJson[UploadResponse])
-      .post(uri)
-      .multipartBody(multiparts)
-      .send()
-      .toEitherT { er =>
-        val errorMessage = s"IPFS 'add' error $uri: $er"
-        IpfsError(errorMessage)
-      }
-      .subflatMap(_.left.map { er =>
-        println(s"IPFS 'add' deserialization error: $er")
-        IpfsError(s"IPFS 'add' deserialization error $uri", Some(er))
-      })
-      .map { r =>
-        println(s"IPFS 'add' finished $uri")
-        r
-      }
-      .leftMap(identity[IpfsError])
-
-  /**
-    * Returns hash of element with empty name. It is a wrapping directory's name.
-    * If only one file was uploaded, a list has one element and a hash of this element will be returned.
-    *
-    * @param responses list of JSON responses from IPFS
-    */
-  private def getParentHash(
-      responses: List[UploadResponse]): Either[IpfsError, ByteVector] = {
-    for {
-      namesWithHashes <- responses
-        .map(
-          r =>
-            fromAddress(r.Hash).map(h => r.Name -> h).leftMap { e =>
-              println(s"IPFS 'add' hash ${r.Hash} is not correct")
-              IpfsError(e)
-          }
-        )
-        .sequence[Either[IpfsError, ?], (String, ByteVector)]
-      hash <- if (namesWithHashes.length == 1) Right(namesWithHashes.head._2)
-      else {
-        // if there is more then one JSON objects
-        // find an object with an empty name - it will be an object with a directory
-        namesWithHashes
-          .find(_._1.isEmpty)
-          .map(_._2)
-          .toRight(
-            IpfsError(
-              s"IPFS 'add' error: incorrect response, expected at least 1 response with empty name, found 0. " +
-                s"Check 'wrap-with-directory' query flag in URI"
-            ): IpfsError
-          )
-      }
-    } yield hash
-  }
-
-  /**
-    * Returns hash of files from directory.
-    * If hash belongs to file, returns the same hash.
-    *
-    * @param hash Content's hash
-    */
-  def ls(hash: ByteVector): EitherT[F, IpfsError, List[ByteVector]] =
-    for {
-      rawResponse <- lsCall(hash)
-      _ <- assert[F](
-        rawResponse.Objects.size == 1,
-        s"Expected a single object, got ${rawResponse.Objects.size}. Response: $rawResponse"
-      )
-      rawHashes = {
-        val headObject = rawResponse.Objects.head
-        if (headObject.Links.forall(_.Name.isEmpty)) List(headObject.Hash)
-        else headObject.Links.map(_.Hash)
-      }
-      hashes <- rawHashes
-        .map { h =>
-          EitherT
-            .fromEither[F](fromAddress(h))
-            .leftMap(err =>
-              IpfsError(s"Cannot parse '$h' hex: $err"): IpfsError)
-        }
-        .sequence[EitherT[F, IpfsError, ?], ByteVector]
-    } yield {
-      println(s"IPFS 'ls' hashes: ${hashes.mkString(" ")}")
-      hashes
-    }
-
-  /**
-    * Downloads data from IPFS.
-    *
-    * @param hash data address in IPFS
-    * @return
-    */
-  def download(
-      hash: ByteVector): EitherT[F, IpfsError, fs2.Stream[F, ByteBuffer]] = {
+   * Downloads data from IPFS.
+   *
+   * @param hash data address in IPFS
+   * @return
+   */
+  def download(hash: ByteVector): EitherT[F, Throwable, fs2.Stream[F, ByteBuffer]] = {
+//    implicit val wtf = sttpBackend
     val address = toAddress(hash)
     val uri = CatUri.param("arg", address)
     for {
-      _ <- EitherT.pure[F, IpfsError](println(s"IPFS 'download' started $uri"))
+      _ <- EitherT.pure[F, Throwable](println(s"IPFS 'download' started $uri"))
       response <- sttp
         .response(asStream[fs2.Stream[F, ByteBuffer]])
         .get(uri)
-        .send()
+        .send[EitherT[F, Throwable, ?]]()
         .toEitherT { er =>
           val errorMessage = s"IPFS 'download' error $uri: $er"
           IpfsError(errorMessage)
@@ -259,37 +103,21 @@ class IpfsClient[F[_]: Monad](ipfsUri: Uri)(
           println(s"IPFS 'download' finished $uri")
           r
         }
-        .leftMap(identity[IpfsError])
+        .leftMap(identity[Throwable])
     } yield response
   }
-
-  /**
-    * Only calculates hash - no data will be persisted on IPFS.
-    *
-    * @return hash of data
-    */
-  def calculateHash[A: IpfsData](data: A): EitherT[F, IpfsError, ByteVector] =
-    add(data, onlyHash = true)
-
-  /**
-    * Uploads data to IPFS
-    *
-    * @return hash of data
-    */
-  def upload[A: IpfsData](data: A): EitherT[F, IpfsError, ByteVector] =
-    add(data, onlyHash = false)
 }
 
 object IpfsClient {
   import io.circe.fs2.stringStreamParser
 
-  private[ipfs] def assert[F[_]: Applicative](
+  def assert[F[_]: Applicative](
       test: Boolean,
       errorMessage: String): EitherT[F, IpfsError, Unit] =
     EitherT.fromEither[F](Either.cond(test, (), IpfsError(errorMessage)))
 
   // parses application/json+stream like {object1}\n{object2}...
-  private[ipfs] def asListJson[B: Decoder: IsOption]
+  def asListJson[B: Decoder: IsOption]
     : ResponseAs[Decoder.Result[List[B]], Nothing] = {
     implicit val rt = new RaiseThrowable[fs2.Pure] {}
     asString
@@ -302,7 +130,7 @@ object IpfsClient {
           })
           .toList
           .map(_.map(_.as[B]).flatMap(identity))
-          .sequence
+          .sequence[Either[DecodingFailure, ?], B]
       )
   }
 }

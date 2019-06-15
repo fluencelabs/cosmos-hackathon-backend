@@ -16,8 +16,6 @@ import scala.sys.process._
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-case class DockerContainer(containerId: String) extends AnyVal
-
 class DockerIO[F[_]: Monad: LiftIO: ContextShift: Defer](
     ctx: ExecutionContext,
     defaultStopTimeout: Int

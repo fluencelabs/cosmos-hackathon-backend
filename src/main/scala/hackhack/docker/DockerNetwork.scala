@@ -25,7 +25,7 @@ import scala.language.higherKinds
  */
 case class DockerNetwork(name: String) extends AnyVal
 
-object DockerNetwork extends slogging.LazyLogging {
+object DockerNetwork {
 
   /**
    *  Create docker network as a resource. Network is deleted after resource is used.

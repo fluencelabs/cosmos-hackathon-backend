@@ -1,72 +1,33 @@
 package hackhack
 
-import java.nio.file.{Files, Paths}
-import java.util.concurrent.Executors
+import java.nio.file.Paths
 
 import cats.effect.concurrent.Ref
 import cats.effect.{ExitCode, Resource, _}
 import cats.syntax.applicativeError._
 import cats.syntax.flatMap._
-import cats.syntax.functor._
-import fs2.{Pull, Stream}
+import fs2.Stream
 import fs2.concurrent.SignallingRef
-import fs2.io.Watcher
-import fs2.io.file.pulls
-import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.syntax._
-import io.circe.{Decoder, Encoder}
 import org.http4s.HttpRoutes
 import org.http4s.dsl.Http4sDsl
 import org.http4s.implicits._
 import org.http4s.server.blaze.BlazeServerBuilder
 import org.http4s.server.middleware.{CORS, CORSConfig}
 import org.http4s.server.websocket.WebSocketBuilder
-import org.http4s.websocket.WebSocketFrame
 import org.http4s.websocket.WebSocketFrame.Text
+import io.circe.parser.parse
 
-import scala.concurrent.{ExecutionContext, ExecutionContextExecutor}
 import scala.concurrent.duration._
 import scala.language.higherKinds
-import scala.sys.process.Process
-
-case class Event(line: String)
-object Event {
-  implicit val encodeEvent: Encoder[Event] = deriveEncoder
-  implicit val decodeEvent: Decoder[Event] = deriveDecoder
-}
 
 case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
-    streams: Ref[F, Map[String, fs2.Stream[F, Event]]],
+    streams: Ref[F, Map[String, fs2.Stream[F, Log]]],
     signal: SignallingRef[F, Boolean]
 ) extends Http4sDsl[F] {
 
-  private def randomStream: fs2.Stream[F, Event] =
-    fs2.Stream
-      .fromIterator[F, String](
-        Process("cat /dev/urandom").lineStream_!.iterator)
-      .map(s => Event(s.take(10)))
-
   private def routes(): HttpRoutes[F] =
     HttpRoutes.of[F] {
-      case GET -> Root / "websocket" / "start" / "random" / key =>
-        println(s"Starting streaming for random $key")
-        for {
-          stream <- streams.modify { map =>
-            map
-              .get(key)
-              .fold {
-                val s = randomStream
-                  .evalTap(e => Sync[F].delay(println(s"event: $e")))
-                  .interruptWhen(signal)
-                map.updated(key, s) -> s
-              }(map -> _)
-          }
-          frames = stream.map(e => Text(e.asJson.noSpaces))
-          ws <- WebSocketBuilder[F].build(
-            frames,
-            _.evalMap(e => Sync[F].delay(println(s"from $key: $e"))))
-        } yield ws
-
       case GET -> Root / "websocket" / "start" / "file" / key =>
         streams.get.flatMap { map =>
           map.get(key) match {
@@ -80,23 +41,36 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
           }
         }
 
-      case (GET | POST) -> Root / "create" / key =>
+      case (GET | POST) -> Root / "create" / appName =>
         val stream =
           fs2.Stream
-//            .eval(Sync[F].delay(Files.createTempFile("websocket", key)))
-            .eval(Sync[F].delay(Paths.get("/tmp/docker.log")))
+//            .eval(Sync[F].delay(Files.createTempFile("websocket", appName)))
+            .eval(Sync[F].delay(Paths.get("/tmp/stage-04-ns.log")))
             .evalTap(path => Sync[F].delay(println(s"created $path")))
             .flatMap(FileStream.stream[F])
-            .map(Event(_))
-            .evalTap(e => Sync[F].delay(println(s"event $key $e")))
+            .map(parse(_).toOption)
+            .unNone
+            .map(_.hcursor.get[String]("log").toOption)
+            .unNone
+            .filter(_.nonEmpty)
+            .evalTap(line => Sync[F].delay(println(s"line $appName $line")))
+            .map(Log(appName, _))
+            .unNone
+            .evalTap(log => Sync[F].delay(println(s"log $appName $log")))
 
-        Sync[F].delay(println(s"Creating stream for $key")) >>
+        Sync[F].delay(println(s"Creating stream for $appName")) >>
           streams.update(map =>
-            map.get(key).fold(map.updated(key, stream)) { _ =>
-              println(s"Stream for $key already exists")
+            map.get(appName).fold(map.updated(appName, stream)) { _ =>
+              println(s"Stream for $appName already exists")
               map
-          }) >>
-          Ok()
+          }) >> Ok("""
+              |{
+              | "consensusHeight": 150
+              |}
+            """.stripMargin)
+
+      // TODO: list of registered apps
+      // TODO: endpoint for consensusHeight
     }
 
   def close(): F[Unit] = signal.set(true)
@@ -128,7 +102,7 @@ object WebsocketServer {
     : Resource[F, (WebsocketServer[F], Fiber[F, Unit])] =
     Resource.make(
       for {
-        streams <- Ref.of[F, Map[String, fs2.Stream[F, Event]]](Map.empty)
+        streams <- Ref.of[F, Map[String, fs2.Stream[F, Log]]](Map.empty)
         signal <- SignallingRef[F, Boolean](false)
         server = WebsocketServer(streams, signal)
         fiber <- Concurrent[F].start(Backoff.default {

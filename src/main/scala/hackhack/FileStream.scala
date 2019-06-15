@@ -11,7 +11,7 @@ import fs2.{Pull, text}
 import scala.concurrent.{ExecutionContext, ExecutionContextExecutor}
 import scala.language.higherKinds
 
-class FileStream[F[_]: Sync](
+class FileStream[F[_]: Sync: ContextShift: Concurrent](
     path: Path,
     blocking: ExecutionContextExecutor) {
 
@@ -20,29 +20,29 @@ class FileStream[F[_]: Sync](
   def stream: fs2.Stream[F, String] = {
     val events = fs2.io.file.watch(path, Seq(Watcher.EventType.Modified))
 
-    fs2.Stream
-      .eval(fileSize)
-      .flatMap(size =>
-        events.evalScan(0L -> size) {
-          case ((_, offset), _) => fileSize.map(offset -> _)
-      })
+    // Emitting None to kickoff first read
+    val sizes = (fs2.Stream.emit(None) ++ events).flatMap(_ => fileSizeStream)
+
+    sizes
+      .scan(0L -> 0L) {
+        case ((_, prevFileSize), fileSize) =>
+          prevFileSize -> fileSize
+      }
       .flatMap { case (start, end) => readRange(start, end) }
   }
 
-  private def readRange(start: Long, end: Long) =
+  def readRange(start: Long, end: Long) =
     fs2.io.file
       .readRange[F](path, blocking, ChunkSize, start, end)
       .through(text.utf8Decode)
       .through(text.lines)
 
-  private def fileSize =
+  val fileSizeStream: fs2.Stream[F, Long] =
     fs2.io.file.pulls
       .fromPath[F](path, blocking, Seq(StandardOpenOption.READ))
-      .flatMap(c => Pull.eval(c.resource.size).flatMap(Pull.output1))
+      .flatMap(c => Pull.eval(c.resource.size))
+      .flatMap(Pull.output1)
       .stream
-      .compile
-      .toList
-      .map(_.head)
 }
 
 object FileStream {
