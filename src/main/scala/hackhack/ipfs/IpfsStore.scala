@@ -33,7 +33,7 @@ import scala.language.higherKinds
 class IpfsStore[F[_]: Functor](client: IpfsClient[F]) {
   def fetch(
       hash: ByteVector): EitherT[F, IpfsError, fs2.Stream[F, ByteBuffer]] =
-    client.download(hash).leftMap(e => IpfsError("fetch", Some(e)))
+    client.download(hash).leftMap(e => IpfsError(s"Error on fetch: $e", Some(e)))
 }
 
 object IpfsStore {

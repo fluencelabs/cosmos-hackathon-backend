@@ -10,7 +10,7 @@ import cats.syntax.applicativeError._
 import cats.syntax.either._
 import cats.syntax.flatMap._
 import cats.syntax.functor._
-import cats.{Applicative, Defer, Monad}
+import cats.{Defer, Monad}
 import hackhack.docker.params.{DockerImage, DockerParams}
 import io.circe.Json
 import io.circe.parser.parse
@@ -66,28 +66,46 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
 
   def run(name: String,
           peer: String,
-          binaryPath: Path): EitherT[F, Throwable, fs2.Stream[F, String]] = {
-    val container = for {
+          binaryPath: Path): EitherT[F, Throwable, String] = {
+    val containerId = for {
       cmd <- dockerCmd(name, peer, binaryPath)
       _ <- log(s"$name got dockerCmd")
-      idPromise <- Deferred[F, String]
+      idPromise <- Deferred[F, Either[Throwable, String]]
       _ <- Concurrent[F].start(
         IO(cmd.!!).attempt
           .onError {
             case e => IO(println(s"Failed to run container $name: $e"))
           }
           .to[F]
-          .flatMap(_.fold(_ => Applicative[F].unit, idPromise.complete)))
+          .flatMap(
+            _.fold(
+              e =>
+                idPromise.complete(
+                  new Exception(s"$name failed to start docker container: $e",
+                                e).asLeft),
+              id => idPromise.complete(id.asRight)
+            )
+          )
+      )
       _ <- log(s"$name signaled docker container to start")
       containerId <- idPromise.get
-      _ <- log(s"$name docker container started $containerId")
+      _ <- containerId.fold(
+        e => log(s"$name failed to start docker container: $e"),
+        id => log(s"$name docker container started $id"))
     } yield containerId
 
+    EitherT(containerId)
+  }
+
+  def streamLog(
+      containerId: String): EitherT[F, Throwable, fs2.Stream[F, String]] =
     for {
-      containerId <- EitherT.liftF(container)
       logPath <- getLogPath(containerId)
       stream = FileStream.stream[F](logPath)
     } yield stream
-  }
+}
 
+object Runner {
+  def make[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent]: F[Runner[F]] =
+    Ref.of[F, Short](0).map(new Runner(_))
 }

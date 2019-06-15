@@ -1,8 +1,39 @@
+import org.apache.ivy.core.module.descriptor.License
+
 name := "http-scala-api"
 
 version := "0.1"
 
 scalaVersion := "2.12.8"
+
+resolvers += Resolver.sonatypeRepo("releases")
+addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.10.0")
+
+licenses += ("Apache-2.0", new URL("https://www.apache.org/licenses/LICENSE-2.0.txt"))
+resolvers += Resolver.bintrayRepo("fluencelabs", "releases")
+// see good explanation https://gist.github.com/djspiewak/7a81a395c461fd3a09a6941d4cd040f2
+scalacOptions ++= Seq("-Ypartial-unification", "-deprecation")
+addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.0")
+
+libraryDependencies ++= Seq(
+  fs2,
+  fs2rx,
+  fs2io,
+  sttp,
+  sttpCirce,
+  sttpFs2Backend,
+  sttpCatsBackend,
+  http4sDsl,
+  http4sServer,
+  http4sCirce,
+  circeCore,
+  circeGeneric,
+  circeGenericExtras,
+  circeParser,
+  circeFs2,
+  cats,
+  catsEffect
+)
 
 val fs2Version = "1.0.4"
 val fs2 = "co.fs2" %% "fs2-core" % fs2Version
@@ -30,26 +61,3 @@ val circeFs2 = "io.circe" %% "circe-fs2" % "0.11.0"
 val catsVersion = "1.6.0"
 val cats = "org.typelevel" %% "cats-core" % catsVersion
 val catsEffect = "org.typelevel" %% "cats-effect" % "1.3.0"
-
-resolvers += Resolver.sonatypeRepo("releases")
-addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.10.0")
-
-libraryDependencies ++= Seq(
-  fs2,
-  fs2rx,
-  fs2io,
-  sttp,
-  sttpCirce,
-  sttpFs2Backend,
-  sttpCatsBackend,
-  http4sDsl,
-  http4sServer,
-  http4sCirce,
-  circeCore,
-  circeGeneric,
-  circeGenericExtras,
-  circeParser,
-  circeFs2,
-  cats,
-  catsEffect
-)
