@@ -1,14 +1,11 @@
 package hackhack
 
-import java.nio.file.Paths
-
 import cats.effect.concurrent.Ref
 import cats.effect.{ExitCode, Resource, _}
 import cats.syntax.applicativeError._
 import cats.syntax.flatMap._
 import fs2.Stream
 import fs2.concurrent.SignallingRef
-import hackhack.ipfs.{IpfsClient, IpfsStore}
 import io.circe.syntax._
 import org.http4s.HttpRoutes
 import org.http4s.dsl.Http4sDsl
@@ -17,7 +14,6 @@ import org.http4s.server.blaze.BlazeServerBuilder
 import org.http4s.server.middleware.{CORS, CORSConfig}
 import org.http4s.server.websocket.WebSocketBuilder
 import org.http4s.websocket.WebSocketFrame.Text
-import io.circe.parser.parse
 
 import scala.concurrent.duration._
 import scala.language.higherKinds
@@ -32,6 +28,7 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
       case GET -> Root / "websocket" / appName =>
         appRegistry.stream(appName).value.flatMap {
           case Left(e) =>
+            println(s"Error while getting stream for $appName: $e")
             InternalServerError(s"Error while getting stream for $appName: $e")
 
           case Right(stream) =>
@@ -48,6 +45,7 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
           .value
           .flatMap {
             case Left(e) =>
+              println(s"Error while running app $appName: $e")
               InternalServerError(s"Error while running app $appName: $e")
 
             case Right(height) =>
@@ -59,7 +57,6 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
 
           }
       // TODO: list of registered apps
-      // TODO: endpoint for consensusHeight
     }
 
   def close(): F[Unit] = signal.set(true)

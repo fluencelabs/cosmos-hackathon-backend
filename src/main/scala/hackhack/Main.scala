@@ -33,6 +33,7 @@ object Main extends IOApp {
       for {
         runner <- Runner.make[IO]
         appRegistry <- AppRegistry.make[IO](ipfsStore, runner)
+        _ <- appRegistry.loadExistingContainers().value.map(IO.fromEither)
         _ <- WebsocketServer
           .make[IO](8080, appRegistry)
           .use {

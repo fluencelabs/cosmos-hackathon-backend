@@ -4,10 +4,12 @@ import java.nio.ByteBuffer
 import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.Executors
 
-import cats.Monad
+import cats.{Monad, Traverse}
 import cats.data.EitherT
 import cats.effect._
 import cats.syntax.functor._
+import cats.syntax.applicative._
+import cats.instances.list._
 import cats.syntax.flatMap._
 import cats.syntax.applicative._
 import cats.effect.concurrent.{Deferred, Ref}
@@ -45,6 +47,32 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
     implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?],
                                       fs2.Stream[F, ByteBuffer]]) {
 
+  private def putApp(app: App) =
+    for {
+      d <- Deferred[F, App]
+      _ <- d.complete(app)
+      _ <- apps.update(
+        map =>
+          map
+            .get(app.name)
+            .fold(map.updated(app.name, d))(_ => map))
+    } yield ()
+
+  def loadExistingContainers(): EitherT[F, Throwable, Unit] = {
+    (for {
+      existingApps <- runner.listFishermenContainers
+      _ = existingApps.foreach(a => println(s"Existing app: $a"))
+      _ <- EitherT.liftF[F, Throwable, Unit] {
+        Traverse[List]
+          .sequence(existingApps.map(putApp))
+          .void
+      }
+    } yield ()).leftMap { e =>
+      println(s"Error loadExistingContainers: $e")
+      new Exception(s"Error on loading existing containers: $e", e)
+    }
+  }
+
   def stream(name: String): EitherT[F, Throwable, fs2.Stream[F, Log]] =
     for {
       app <- EitherT(getApp(name))
@@ -80,12 +108,14 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
             .toAbsolutePath).attempt.to[F])
       _ <- EitherT(IO(Files.createDirectories(baseDir)).attempt.to[F])
       genesisPath = baseDir.resolve("genesis.json")
-      _ <- EitherT(IO(Files.write(genesisPath, genesis.getBytes())).attempt.to[F])
+      _ <- EitherT(
+        IO(Files.write(genesisPath, genesis.getBytes())).attempt.to[F])
       _ <- log(s"$name saved genesis -> $genesisPath")
 
-      binaryHash <- EitherT.fromEither(
+      binaryHash <- EitherT.fromEither[F](
         ByteVector
-          .fromBase58Descriptive(hash).map(_.drop(2))
+          .fromBase58Descriptive(hash)
+          .map(_.drop(2))
           .leftMap(e =>
             new Exception(s"Failed to decode binary hash from base64: $e"): Throwable))
 
@@ -96,7 +126,12 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       status <- status(name, peer)
       _ <- log(s"$name got peer status")
 
-      containerId <- runner.run(name, p2pPeer(peer, status), binaryPath, genesisPath)
+      containerId <- runner.run(name,
+                                p2pPeer(peer, status),
+                                peer.rpcPort,
+                                binaryHash,
+                                binaryPath,
+                                genesisPath)
       _ <- log(s"$name container started $containerId")
 
       app = App(name, containerId, peer, binaryHash, binaryPath)
@@ -125,7 +160,8 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
 
   private def p2pPeer(peer: Peer, status: TendermintStatus) = {
     val id = status.node_info.id
-    val port = status.node_info.listen_addr.replace("tcp://", "").split(":").tail.head
+    val port =
+      status.node_info.listen_addr.replace("tcp://", "").split(":").tail.head
     s"$id@${peer.host}:$port"
   }
 

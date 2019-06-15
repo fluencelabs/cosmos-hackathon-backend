@@ -6,18 +6,21 @@ import java.util.concurrent.Executors
 import cats.data.EitherT
 import cats.effect._
 import cats.effect.concurrent.{Deferred, Ref}
+import cats.instances.list._
 import cats.syntax.applicativeError._
 import cats.syntax.either._
 import cats.syntax.flatMap._
 import cats.syntax.functor._
-import cats.{Defer, Monad}
+import cats.{Defer, Monad, Traverse}
 import hackhack.docker.params.{DockerImage, DockerParams}
 import io.circe.Json
 import io.circe.parser.parse
+import scodec.bits.ByteVector
 
 import scala.concurrent.ExecutionContext
 import scala.language.{higherKinds, postfixOps}
 import scala.sys.process._
+import scala.util.Try
 
 case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
     lastPort: Ref[F, Short],
@@ -32,7 +35,12 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
   private def nextPortThousand =
     lastPort.modify(p => (p + 1 toShort, p * 1000 toShort))
 
-  private def dockerCmd(name: String, peer: String, binaryPath: Path, genesisPath: Path) =
+  private def dockerCmd(name: String,
+                        peer: String,
+                        rpcPort: Short,
+                        binaryHash: ByteVector,
+                        binaryPath: Path,
+                        genesisPath: Path) =
     for {
       portThousand <- nextPortThousand
 
@@ -41,9 +49,12 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
         .port(30656 + portThousand toShort, 26656)
         .port(30657 + portThousand toShort, 26657)
         .port(30658 + portThousand toShort, 26658)
-        .option("--name", name)
+        .option("--name", s"fisherman-$name")
         .option("-e", s"PEER=$peer")
+        .option("-e", s"RPCPORT=$rpcPort")
         .option("-e", s"MONIKER=$name")
+        .option("-e", s"BINARY_HASH=${binaryHash.toHex}")
+        .option("-e", s"BINARY_PATH=${binaryPath.toAbsolutePath.toString}")
         .volume(binaryPath.toAbsolutePath.toString, "/binary")
         .volume(genesisPath.toAbsolutePath.toString, "/root/genesis.json")
         .prepared(DockerImage(ContainerImage, "ubuntu"))
@@ -52,7 +63,7 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
       process = cmd.process
     } yield process
 
-  private def getLogPath(containerId: String): EitherT[F, Throwable, Path] =
+  private def inspect(containerId: String): EitherT[F, Throwable, Json] =
     EitherT(IO(s"docker inspect $containerId".!!).attempt.to[F])
       .subflatMap { inspect =>
         parse(inspect)
@@ -65,6 +76,9 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
               .asLeft[Json]
           )(_.asRight)
       }
+
+  private def getLogPath(containerId: String): EitherT[F, Throwable, Path] =
+    inspect(containerId)
       .subflatMap { json =>
         json.hcursor.get[String]("LogPath")
       }
@@ -72,14 +86,60 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
         EitherT(IO(Paths.get(p)).attempt.to[F])
       }
 
+  def listFishermenContainers: EitherT[F, Throwable, List[App]] =
+    for {
+      ps <- EitherT(
+        IO(
+          Seq("docker",
+              "ps",
+              "-a",
+              "-f",
+              "name=fisherman",
+              "--format",
+              "{{.Names}} {{.ID}}").!!).attempt.to[F])
+      (names, ids) = ps
+        .split("\n")
+        .filter(_.nonEmpty)
+        .toList
+        .map(_.split(" "))
+        .map(a => a.head -> a.last)
+        .unzip
+      inspects <- Traverse[List].sequence(ids.map(inspect))
+      envs <- Traverse[List]
+        .sequence(inspects.map(
+          _.hcursor.downField("Config").get[List[String]]("Env").toEitherT[F]))
+        .leftMap(identity[Throwable])
+
+      envMap <- Try(
+        envs.map(_.map(_.split("=")).map(a => a.head -> a.last).toMap)).toEither
+        .toEitherT[F]
+
+      apps <- Try {
+        ids.zip(names).zip(envMap).map {
+          case ((id, name), env) =>
+            val peer = env
+              .get("PEER")
+              .map(_.split(Array('@', ':')))
+              .map(a => Peer(a(1), a(2).toShort))
+              .get
+            val binaryHash = ByteVector.fromValidHex(env("BINARY_HASH"))
+            val binaryPath = Paths.get(env("BINARY_PATH"))
+            val cleanName = name.replace("fisherman-", "")
+            App(cleanName, id, peer, binaryHash, binaryPath)
+        }
+      }.toEither.toEitherT[F]
+    } yield apps
+
   private def log(str: String) = IO(println(str)).to[F]
 
   def run(name: String,
           peer: String,
+          rpcPort: Short,
+          binaryHash: ByteVector,
           binaryPath: Path,
           genesisPath: Path): EitherT[F, Throwable, String] = {
     val containerId = for {
-      cmd <- dockerCmd(name, peer, binaryPath, genesisPath)
+      cmd <- dockerCmd(name, peer, rpcPort, binaryHash, binaryPath, genesisPath)
       _ <- log(s"$name got dockerCmd")
       idPromise <- Deferred[F, Either[Throwable, String]]
       _ <- Concurrent[F].start(
@@ -108,13 +168,30 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
     EitherT(containerId)
   }
 
-  def streamLog(
+  def streamFileLog(
       containerId: String): EitherT[F, Throwable, fs2.Stream[F, String]] =
     for {
       logPath <- getLogPath(containerId)
       _ = println(s"$containerId logPath: $logPath")
       stream = FileStream.stream[F](logPath)
     } yield stream
+
+  def streamLog(
+      containerId: String): EitherT[F, Throwable, fs2.Stream[F, String]] = {
+    val errors = scala.collection.mutable.ArrayBuffer.empty[String]
+    for {
+      lines <- EitherT(
+        IO(s"docker logs -f $containerId".lineStream(new ProcessLogger {
+          override def out(s: => String): Unit = {}
+
+          override def err(s: => String): Unit = errors += s
+
+          override def buffer[T](f: => T): T = f
+        })).attempt.to[F])
+      stream = fs2.Stream.fromIterator(lines.iterator) ++ fs2.Stream.emits(
+        errors)
+    } yield stream
+  }
 }
 
 object Runner {
