@@ -4,7 +4,6 @@ import java.nio.file.{Path, StandardOpenOption}
 import java.util.concurrent.Executors
 
 import cats.effect.{Concurrent, ContextShift, Resource, Sync}
-import cats.syntax.functor._
 import fs2.io.Watcher
 import fs2.{Pull, text}
 
@@ -31,13 +30,13 @@ class FileStream[F[_]: Sync: ContextShift: Concurrent](
       .flatMap { case (start, end) => readRange(start, end) }
   }
 
-  def readRange(start: Long, end: Long) =
+  private def readRange(start: Long, end: Long) =
     fs2.io.file
       .readRange[F](path, blocking, ChunkSize, start, end)
       .through(text.utf8Decode)
       .through(text.lines)
 
-  val fileSizeStream: fs2.Stream[F, Long] =
+  private val fileSizeStream: fs2.Stream[F, Long] =
     fs2.io.file.pulls
       .fromPath[F](path, blocking, Seq(StandardOpenOption.READ))
       .flatMap(c => Pull.eval(c.resource.size))
