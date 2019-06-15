@@ -79,9 +79,9 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
             .get(System.getProperty("user.home"), s".salmon/$name")
             .toAbsolutePath).attempt.to[F])
       _ <- EitherT(IO(Files.createDirectories(baseDir)).attempt.to[F])
-      path = baseDir.resolve("genesis.json")
-      _ <- EitherT(IO(Files.write(path, genesis.getBytes())).attempt.to[F])
-      _ <- log(s"$name saved genesis -> $path")
+      genesisPath = baseDir.resolve("genesis.json")
+      _ <- EitherT(IO(Files.write(genesisPath, genesis.getBytes())).attempt.to[F])
+      _ <- log(s"$name saved genesis -> $genesisPath")
 
       binaryHash <- EitherT.fromEither(
         ByteVector
@@ -96,7 +96,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       status <- status(name, peer)
       _ <- log(s"$name got peer status")
 
-      containerId <- runner.run(name, p2pPeer(status), binaryPath)
+      containerId <- runner.run(name, p2pPeer(peer, status), binaryPath, genesisPath)
       _ <- log(s"$name container started $containerId")
 
       app = App(name, containerId, peer, binaryHash, binaryPath)
@@ -123,10 +123,10 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
     )
   }
 
-  private def p2pPeer(status: TendermintStatus) = {
+  private def p2pPeer(peer: Peer, status: TendermintStatus) = {
     val id = status.node_info.id
-    val endpoint = status.node_info.listen_addr.replace("tcp://", "")
-    s"$id@$endpoint"
+    val port = status.node_info.listen_addr.replace("tcp://", "").split(":").tail.head
+    s"$id@${peer.host}:$port"
   }
 
   private def dumpGenesis(appName: String,

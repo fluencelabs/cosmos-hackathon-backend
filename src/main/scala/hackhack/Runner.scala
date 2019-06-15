@@ -27,48 +27,59 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
 
 //  nsd --log_level "debug" start --moniker stage-02 --address tcp://0.0.0.0:26658 --p2p.laddr tcp://0.0.0.0:26656 --rpc.laddr tcp://0.0.0.0:26657 --p2p.persistent_peers d53cf2cb91514edb41441503e8a11f004023f2ee@207.154.210.151:26656
 
-  val ContainerImage = "cosmos-runner"
+  val ContainerImage = "folexflu/cosmos-runner"
 
   private def nextPortThousand =
     lastPort.modify(p => (p + 1 toShort, p * 1000 toShort))
 
-  private def dockerCmd(name: String, peer: String, binaryPath: Path) =
+  private def dockerCmd(name: String, peer: String, binaryPath: Path, genesisPath: Path) =
     for {
       portThousand <- nextPortThousand
-      process = DockerParams
+
+      cmd = DockerParams
         .build()
         .port(30656 + portThousand toShort, 26656)
         .port(30657 + portThousand toShort, 26657)
         .port(30658 + portThousand toShort, 26658)
         .option("--name", name)
-        .option("-e", s"PEER=$peer") //TODO: Add $PEER usage to docker script
-        .volume(binaryPath.toAbsolutePath.toString, "/binary") //TODO: download binary from IPFS
-        .prepared(DockerImage(ContainerImage, "latest"))
+        .option("-e", s"PEER=$peer")
+        .option("-e", s"MONIKER=$name")
+        .volume(binaryPath.toAbsolutePath.toString, "/binary")
+        .volume(genesisPath.toAbsolutePath.toString, "/root/genesis.json")
+        .prepared(DockerImage(ContainerImage, "ubuntu"))
         .daemonRun()
-        .process
+      _ = println(s"Running docker ${cmd.command.mkString(" ")}")
+      process = cmd.process
     } yield process
 
   private def getLogPath(containerId: String): EitherT[F, Throwable, Path] =
     EitherT(IO(s"docker inspect $containerId".!!).attempt.to[F])
-      .subflatMap(inspect => parse(inspect))
-      .subflatMap(
-        _.asArray
+      .subflatMap { inspect =>
+        parse(inspect)
+      }
+      .subflatMap { json =>
+        json.asArray
           .flatMap(_.headOption)
           .fold(
             new Exception(s"Can't parse array from docker inspect $containerId")
               .asLeft[Json]
           )(_.asRight)
-      )
-      .subflatMap(_.as[String])
-      .flatMap(p => EitherT(IO(Paths.get(p)).attempt.to[F]))
+      }
+      .subflatMap { json =>
+        json.hcursor.get[String]("LogPath")
+      }
+      .flatMap { p =>
+        EitherT(IO(Paths.get(p)).attempt.to[F])
+      }
 
   private def log(str: String) = IO(println(str)).to[F]
 
   def run(name: String,
           peer: String,
-          binaryPath: Path): EitherT[F, Throwable, String] = {
+          binaryPath: Path,
+          genesisPath: Path): EitherT[F, Throwable, String] = {
     val containerId = for {
-      cmd <- dockerCmd(name, peer, binaryPath)
+      cmd <- dockerCmd(name, peer, binaryPath, genesisPath)
       _ <- log(s"$name got dockerCmd")
       idPromise <- Deferred[F, Either[Throwable, String]]
       _ <- Concurrent[F].start(
@@ -101,6 +112,7 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
       containerId: String): EitherT[F, Throwable, fs2.Stream[F, String]] =
     for {
       logPath <- getLogPath(containerId)
+      _ = println(s"$containerId logPath: $logPath")
       stream = FileStream.stream[F](logPath)
     } yield stream
 }

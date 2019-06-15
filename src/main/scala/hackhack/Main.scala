@@ -26,7 +26,7 @@ object Main extends IOApp {
 
   override def run(args: List[String]): IO[ExitCode] = {
 
-    val ipfsUri = Uri("ipfs.fluence.one", 5001)
+    val ipfsUri = Uri("ipfs2.fluence.one", 5001)
 
     sttpResource.use { implicit sttp =>
       val ipfsStore = IpfsStore[IO](ipfsUri)
