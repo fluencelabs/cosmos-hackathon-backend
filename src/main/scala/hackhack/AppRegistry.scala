@@ -188,7 +188,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       app <- appOpt
         .fold(new Exception(s"There is no app $name").asLeft[App])(_.asRight)
         .toEitherT[F]
-      block <- rpc(name, app.peer, s"/block", "height" -> "10")
+      block <- rpc(name, app.peer, s"/block", "height" -> height.toString)
     } yield block.spaces2
 
   private def log(str: String) = EitherT(IO(println(str)).attempt.to[F])
