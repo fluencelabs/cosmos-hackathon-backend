@@ -145,7 +145,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
             new Exception(s"Failed to decode binary hash from base64: $e"): Throwable))
 
       binaryPath = baseDir.resolve("binary")
-      _ <- fetchTo(binaryHash, binaryPath).leftMap(identity[Throwable])
+      _ <- ipfsFetch(binaryHash, binaryPath).leftMap(identity[Throwable])
       _ <- log(s"$name binary downloaded $binaryPath")
 
       status <- status(name, peer)
@@ -244,7 +244,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       max = 10
     )
 
-  private def fetchTo(hash: ByteVector,
+  private def ipfsFetch(hash: ByteVector,
                       dest: Path): EitherT[F, IpfsError, Unit] = {
     ipfsStore
       .fetch(hash)

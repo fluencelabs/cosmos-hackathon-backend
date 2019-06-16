@@ -96,7 +96,7 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
     for {
       exitCode <- Stream.eval(Ref[F].of(ExitCode.Success))
       server <- BlazeServerBuilder[F]
-        .bindHttp(port)
+        .bindHttp(port, "0.0.0.0")
         .withHttpApp(CORS[F, F](routes().orNotFound, corsConfig))
         .serveWhile(signal, exitCode)
     } yield server

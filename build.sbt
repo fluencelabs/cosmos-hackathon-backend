@@ -1,4 +1,5 @@
 import org.apache.ivy.core.module.descriptor.License
+import sbtassembly.{MergeStrategy, PathList}
 
 name := "http-scala-api"
 
@@ -14,6 +15,9 @@ resolvers += Resolver.bintrayRepo("fluencelabs", "releases")
 // see good explanation https://gist.github.com/djspiewak/7a81a395c461fd3a09a6941d4cd040f2
 scalacOptions ++= Seq("-Ypartial-unification", "-deprecation")
 addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.0")
+
+assemblyMergeStrategy in assembly := strategy.value
+
 
 libraryDependencies ++= Seq(
   fs2,
@@ -61,3 +65,13 @@ val circeFs2 = "io.circe" %% "circe-fs2" % "0.11.0"
 val catsVersion = "1.6.0"
 val cats = "org.typelevel" %% "cats-core" % catsVersion
 val catsEffect = "org.typelevel" %% "cats-effect" % "1.3.0"
+
+val strategy = Def.setting[String => MergeStrategy]({
+  // a module definition fails compilation for java 8, just skip it
+  case PathList("module-info.class", xs @ _*) => MergeStrategy.first
+  case "META-INF/io.netty.versions.properties" => MergeStrategy.first
+  case x =>
+    import sbtassembly.AssemblyPlugin.autoImport.assembly
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
+}: String => MergeStrategy)
