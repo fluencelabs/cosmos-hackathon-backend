@@ -181,14 +181,14 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       }
   }
 
-  def getBlock(name: String, height: Long) =
+  def getBlock(name: String, height: Long): EitherT[F, Throwable, String] =
     for {
       appOpt <- EitherT.right(apps.get.flatMap(map =>
         Traverse[Option].sequence(map.get(name).map(_.get))))
       app <- appOpt
         .fold(new Exception(s"There is no app $name").asLeft[App])(_.asRight)
         .toEitherT[F]
-      block <- rpc(name, app.peer, s"/block?height=$height")
+      block <- rpc(name, app.peer, s"/block", "height" -> "10")
     } yield block.spaces2
 
   private def log(str: String) = EitherT(IO(println(str)).attempt.to[F])
@@ -227,10 +227,11 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
 
   private def rpc(appName: String,
                   peer: Peer,
-                  path: String): EitherT[F, Throwable, Json] =
+                  path: String,
+                  params: (String, String)*): EitherT[F, Throwable, Json] =
     Backoff.default.retry(
       sttp
-        .get(peer.RpcUri.path(path))
+        .get(peer.RpcUri.path(path).params(params : _*))
         .send[EitherT[F, Throwable, ?]]
         .subflatMap(
           _.body
