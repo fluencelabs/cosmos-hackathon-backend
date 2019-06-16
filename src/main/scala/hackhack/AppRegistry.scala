@@ -4,23 +4,23 @@ import java.nio.ByteBuffer
 import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.Executors
 
-import cats.{Monad, Traverse}
 import cats.data.EitherT
 import cats.effect._
-import cats.syntax.functor._
-import cats.syntax.applicative._
-import cats.instances.list._
-import cats.syntax.flatMap._
-import cats.syntax.applicative._
 import cats.effect.concurrent.{Deferred, Ref}
+import cats.instances.list._
+import cats.instances.option._
+import cats.syntax.applicative._
 import cats.syntax.applicativeError._
 import cats.syntax.either._
+import cats.syntax.flatMap._
+import cats.syntax.functor._
 import cats.syntax.option._
+import cats.{Monad, Traverse}
 import com.softwaremill.sttp.{SttpBackend, Uri, sttp}
 import hackhack.ipfs.{IpfsError, IpfsStore}
-import io.circe.{Decoder, Encoder, Json, ObjectEncoder}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.parser.parse
+import io.circe.{Decoder, Encoder, Json, ObjectEncoder}
 import scodec.bits.ByteVector
 
 import scala.concurrent.ExecutionContext
@@ -45,9 +45,22 @@ case class App(name: String,
                binaryPath: Path)
 
 object App {
-  private implicit val encbc: Encoder[ByteVector] = Encoder.encodeString.contramap(_.toHex)
-  private implicit val encPath: Encoder[Path] = Encoder.encodeString.contramap(_.toString)
+  private implicit val encbc: Encoder[ByteVector] =
+    Encoder.encodeString.contramap(_.toHex)
+  private implicit val encPath: Encoder[Path] =
+    Encoder.encodeString.contramap(_.toString)
   implicit val encodeApp: ObjectEncoder[App] = deriveEncoder
+}
+
+case class AppInfo(name: String,
+                   network: String,
+                   binaryHash: ByteVector,
+                   consensusHeight: Long)
+
+object AppInfo {
+  private implicit val encbc: Encoder[ByteVector] =
+    Encoder.encodeString.contramap(_.toHex)
+  implicit val encodeAppInfo: Encoder[AppInfo] = deriveEncoder
 }
 
 class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
@@ -150,7 +163,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       _ <- EitherT.liftF(deferred.complete(app))
     } yield status.sync_info.latest_block_height
 
-  def getAllApps: EitherT[F, Throwable, List[(App, Long)]] = {
+  def getAllApps: EitherT[F, Throwable, List[AppInfo]] = {
     for {
       appList <- EitherT.right(
         apps.get.flatMap(map =>
@@ -160,9 +173,23 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
         status(app.name, app.peer)))
     } yield
       appList.zip(statuses).map {
-        case (app, status) => (app, status.sync_info.latest_block_height)
+        case (app, status) =>
+          AppInfo(app.name,
+                  status.node_info.network,
+                  app.binaryHash,
+                  status.sync_info.latest_block_height)
       }
   }
+
+  def getBlock(name: String, height: Long) =
+    for {
+      appOpt <- EitherT.right(apps.get.flatMap(map =>
+        Traverse[Option].sequence(map.get(name).map(_.get))))
+      app <- appOpt
+        .fold(new Exception(s"There is no app $name").asLeft[App])(_.asRight)
+        .toEitherT[F]
+      block <- rpc(name, app.peer, s"/block?height=$height")
+    } yield block.spaces2
 
   private def log(str: String) = EitherT(IO(println(str)).attempt.to[F])
 

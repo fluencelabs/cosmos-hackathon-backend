@@ -1,12 +1,13 @@
 package hackhack
 
+import java.nio.file.Paths
+
 import cats.effect.concurrent.Ref
 import cats.effect.{ExitCode, Resource, _}
 import cats.syntax.applicativeError._
 import cats.syntax.flatMap._
 import fs2.Stream
 import fs2.concurrent.SignallingRef
-import io.circe.JsonLong
 import io.circe.syntax._
 import org.http4s.HttpRoutes
 import org.http4s.dsl.Http4sDsl
@@ -26,6 +27,19 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
 
   private def routes(): HttpRoutes[F] =
     HttpRoutes.of[F] {
+      case GET -> Root / "file" =>
+        val stream = FileStream
+          .stream[F](Paths.get("/tmp/stream.log"))
+          .evalTap(line => Sync[F].delay(println(s"line $line")))
+          .map(Log("file", _))
+          .unNone
+          .evalTap(log => Sync[F].delay(println(s"log $log")))
+
+        WebSocketBuilder[F].build(
+          stream.map(e => Text(e.asJson.noSpaces)),
+          _.evalMap(e => Sync[F].delay(println(s"from file: $e")))
+        )
+
       case GET -> Root / "websocket" / appName =>
         appRegistry.stream(appName).value.flatMap {
           case Left(e) =>
@@ -61,21 +75,19 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
       case GET -> Root / "apps" =>
         (for {
           apps <- appRegistry.getAllApps
-          json = apps
-            .map {
-              case (app, height) =>
-                app.asJsonObject
-                  .add("consensusHeight", height.asJson)
-                  .toMap
-                  .asJson
-            }
-            .asJson
-            .spaces2
+          json = apps.asJson.spaces2
         } yield json).value.flatMap {
-          case Left(e) => InternalServerError(s"Error on /apps: $e")
+          case Left(e)     => InternalServerError(s"Error on /apps: $e")
           case Right(json) => Ok(json)
         }
-      // TODO: list of registered apps
+
+      case GET -> Root / "block" / name / LongVar(height) =>
+        appRegistry.getBlock(name, height).value.flatMap {
+          case Left(e) =>
+            InternalServerError(
+              s"Error while getting block $height for $name: $e")
+          case Right(block) => Ok(block)
+        }
     }
 
   def close(): F[Unit] = signal.set(true)
