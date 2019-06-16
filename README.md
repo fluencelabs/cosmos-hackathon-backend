@@ -1,4 +1,4 @@
-![logo](img/salmon.png)
+![logo](img/cosmicsalmon.png)
 
 - Backend here
 - Frontend [there](https://github.com/fluencelabs/cosmos-hackathon-frontend)
