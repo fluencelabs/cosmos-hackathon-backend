@@ -6,6 +6,7 @@ import cats.syntax.applicativeError._
 import cats.syntax.flatMap._
 import fs2.Stream
 import fs2.concurrent.SignallingRef
+import io.circe.JsonLong
 import io.circe.syntax._
 import org.http4s.HttpRoutes
 import org.http4s.dsl.Http4sDsl
@@ -56,6 +57,24 @@ case class WebsocketServer[F[_]: ConcurrentEffect: Timer: ContextShift](
              """.stripMargin)
 
           }
+
+      case GET -> Root / "apps" =>
+        (for {
+          apps <- appRegistry.getAllApps
+          json = apps
+            .map {
+              case (app, height) =>
+                app.asJsonObject
+                  .add("consensusHeight", height.asJson)
+                  .toMap
+                  .asJson
+            }
+            .asJson
+            .spaces2
+        } yield json).value.flatMap {
+          case Left(e) => InternalServerError(s"Error on /apps: $e")
+          case Right(json) => Ok(json)
+        }
       // TODO: list of registered apps
     }
 

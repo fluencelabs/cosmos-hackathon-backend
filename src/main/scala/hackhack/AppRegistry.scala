@@ -18,7 +18,8 @@ import cats.syntax.either._
 import cats.syntax.option._
 import com.softwaremill.sttp.{SttpBackend, Uri, sttp}
 import hackhack.ipfs.{IpfsError, IpfsStore}
-import io.circe.Json
+import io.circe.{Decoder, Encoder, Json, ObjectEncoder}
+import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.parser.parse
 import scodec.bits.ByteVector
 
@@ -32,11 +33,22 @@ case class Peer(
   val RpcUri = Uri(host, rpcPort)
 }
 
+object Peer {
+  implicit val encodePeer: Encoder[Peer] = deriveEncoder
+  implicit val decodePeer: Decoder[Peer] = deriveDecoder
+}
+
 case class App(name: String,
                containerId: String,
                peer: Peer,
                binaryHash: ByteVector,
                binaryPath: Path)
+
+object App {
+  private implicit val encbc: Encoder[ByteVector] = Encoder.encodeString.contramap(_.toHex)
+  private implicit val encPath: Encoder[Path] = Encoder.encodeString.contramap(_.toString)
+  implicit val encodeApp: ObjectEncoder[App] = deriveEncoder
+}
 
 class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
     ipfsStore: IpfsStore[F],
@@ -137,6 +149,20 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
       app = App(name, containerId, peer, binaryHash, binaryPath)
       _ <- EitherT.liftF(deferred.complete(app))
     } yield status.sync_info.latest_block_height
+
+  def getAllApps: EitherT[F, Throwable, List[(App, Long)]] = {
+    for {
+      appList <- EitherT.right(
+        apps.get.flatMap(map =>
+          Traverse[List].sequence(map.values.map(_.get).toList))
+      )
+      statuses <- Traverse[List].sequence(appList.map(app =>
+        status(app.name, app.peer)))
+    } yield
+      appList.zip(statuses).map {
+        case (app, status) => (app, status.sync_info.latest_block_height)
+      }
+  }
 
   private def log(str: String) = EitherT(IO(println(str)).attempt.to[F])
 

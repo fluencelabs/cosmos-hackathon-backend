@@ -117,10 +117,11 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
       apps <- Try {
         ids.zip(names).zip(envMap).map {
           case ((id, name), env) =>
+            val rpcPort = env("RPCPORT").toShort
             val peer = env
               .get("PEER")
               .map(_.split(Array('@', ':')))
-              .map(a => Peer(a(1), a(2).toShort))
+              .map(a => Peer(a(1), rpcPort))
               .get
             val binaryHash = ByteVector.fromValidHex(env("BINARY_HASH"))
             val binaryPath = Paths.get(env("BINARY_PATH"))
