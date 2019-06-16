@@ -9,6 +9,7 @@ import cats.effect._
 import cats.effect.concurrent.{Deferred, Ref, TryableDeferred}
 import cats.instances.list._
 import cats.instances.option._
+import cats.instances.either._
 import cats.syntax.applicative._
 import cats.syntax.applicativeError._
 import cats.syntax.either._
@@ -17,7 +18,7 @@ import cats.syntax.functor._
 import cats.syntax.option._
 import cats.{Monad, Traverse}
 import com.softwaremill.sttp.{SttpBackend, Uri, sttp}
-import hackhack.ipfs.{IpfsError, IpfsStore}
+import hackhack.ipfs.{IpfsError, IpfsStore, Multihash}
 import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.parser.parse
 import io.circe.{Decoder, Encoder, Json, ObjectEncoder}
@@ -54,8 +55,9 @@ object App {
 
 case class AppInfo(name: String,
                    network: String,
-                   binaryHash: ByteVector,
-                   consensusHeight: Long)
+                   binaryHash: String,
+                   consensusHeight: Long,
+                   validatorsCount: Int)
 
 object AppInfo {
   private implicit val encbc: Encoder[ByteVector] =
@@ -180,8 +182,9 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
         case (app, status) =>
           AppInfo(app.name,
                   status.node_info.network,
-                  app.binaryHash,
-                  status.sync_info.latest_block_height)
+                  Multihash.asBase58(app.binaryHash),
+                  status.sync_info.latest_block_height,
+                  4)
       }
   }
 

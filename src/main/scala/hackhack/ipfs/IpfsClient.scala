@@ -50,18 +50,20 @@ object ResponseOps {
   }
 }
 
+object Multihash {
+  // https://github.com/multiformats/multicodec/blob/master/table.csv
+  val SHA256 = ByteVector(0x12, 32) // 0x12 => SHA256; 32 = 256 bits in bytes
+  def asBase58(hash: ByteVector): String = (SHA256 ++ hash).toBase58
+}
+
 class IpfsClient[F[_]: Monad](ipfsUri: Uri)(
-    implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?], fs2.Stream[F, ByteBuffer]]
+    implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?],
+                                      fs2.Stream[F, ByteBuffer]]
 ) {
 
   import IpfsClient._
   import IpfsLsResponse._
   import ResponseOps._
-
-  object Multihash {
-    // https://github.com/multiformats/multicodec/blob/master/table.csv
-    val SHA256 = ByteVector(0x12, 32) // 0x12 => SHA256; 32 = 256 bits in bytes
-  }
 
   // URI for downloading data
   private val CatUri = ipfsUri.path("/api/v0/cat")
@@ -80,12 +82,13 @@ class IpfsClient[F[_]: Monad](ipfsUri: Uri)(
     ByteVector.fromBase58Descriptive(str).map(_.drop(2))
 
   /**
-   * Downloads data from IPFS.
-   *
-   * @param hash data address in IPFS
-   * @return
-   */
-  def download(hash: ByteVector): EitherT[F, Throwable, fs2.Stream[F, ByteBuffer]] = {
+    * Downloads data from IPFS.
+    *
+    * @param hash data address in IPFS
+    * @return
+    */
+  def download(
+      hash: ByteVector): EitherT[F, Throwable, fs2.Stream[F, ByteBuffer]] = {
 //    implicit val wtf = sttpBackend
     val address = toAddress(hash)
     val uri = CatUri.param("arg", address)
