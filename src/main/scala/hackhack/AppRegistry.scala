@@ -6,7 +6,7 @@ import java.util.concurrent.Executors
 
 import cats.data.EitherT
 import cats.effect._
-import cats.effect.concurrent.{Deferred, Ref}
+import cats.effect.concurrent.{Deferred, Ref, TryableDeferred}
 import cats.instances.list._
 import cats.instances.option._
 import cats.syntax.applicative._
@@ -66,7 +66,7 @@ object AppInfo {
 class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
     ipfsStore: IpfsStore[F],
     runner: Runner[F],
-    apps: Ref[F, Map[String, Deferred[F, App]]],
+    apps: Ref[F, Map[String, TryableDeferred[F, App]]],
     blockingCtx: ExecutionContext =
       ExecutionContext.fromExecutorService(Executors.newCachedThreadPool()))(
     implicit sttpBackend: SttpBackend[EitherT[F, Throwable, ?],
@@ -74,7 +74,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
 
   private def putApp(app: App) =
     for {
-      d <- Deferred[F, App]
+      d <- Deferred.tryable[F, App]
       _ <- d.complete(app)
       _ <- apps.update(
         map =>
@@ -83,7 +83,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
             .fold(map.updated(app.name, d))(_ => map))
     } yield ()
 
-  def loadExistingContainers(): EitherT[F, Throwable, Unit] = {
+  def loadExistingContainers(): EitherT[F, Exception, Short] = {
     (for {
       existingApps <- runner.listFishermenContainers
       _ = existingApps.foreach(a => println(s"Existing app: $a"))
@@ -92,7 +92,8 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
           .sequence(existingApps.map(putApp))
           .void
       }
-    } yield ()).leftMap { e =>
+      maxPort = existingApps.maxBy(_.peer.rpcPort).peer.rpcPort
+    } yield maxPort).leftMap { e =>
       println(s"Error loadExistingContainers: $e")
       new Exception(s"Error on loading existing containers: $e", e)
     }
@@ -112,7 +113,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
   // Returns consensusHeight
   def run(name: String, peer: Peer, hash: String): EitherT[F, Throwable, Long] =
     for {
-      deferred <- EitherT.liftF(Deferred[F, App])
+      deferred <- EitherT.liftF(Deferred.tryable[F, App])
       _ <- EitherT(
         apps.modify(
           map =>
@@ -166,8 +167,11 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
   def getAllApps: EitherT[F, Throwable, List[AppInfo]] = {
     for {
       appList <- EitherT.right(
-        apps.get.flatMap(map =>
-          Traverse[List].sequence(map.values.map(_.get).toList))
+        apps.get.flatMap(
+          map =>
+            Traverse[List]
+              .sequence(map.values.map(_.tryGet).toList)
+              .map(_.flatten))
       )
       statuses <- Traverse[List].sequence(appList.map(app =>
         status(app.name, app.peer)))
@@ -184,7 +188,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
   def getBlock(name: String, height: Long): EitherT[F, Throwable, String] =
     for {
       appOpt <- EitherT.right(apps.get.flatMap(map =>
-        Traverse[Option].sequence(map.get(name).map(_.get))))
+        Traverse[Option].sequence(map.get(name).map(_.tryGet)).map(_.flatten)))
       app <- appOpt
         .fold(new Exception(s"There is no app $name").asLeft[App])(_.asRight)
         .toEitherT[F]
@@ -196,10 +200,11 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
   private def getApp(name: String): F[Either[Throwable, App]] =
     for {
       map <- apps.get
-      appOpt = map.get(name)
-      app <- appOpt.fold(
-        new Exception(s"There is no app $name").asLeft[App].pure[F])(
-        _.get.map(_.asRight))
+      appOpt <- Traverse[Option]
+        .sequence(map.get(name).map(_.tryGet))
+        .map(_.flatten)
+      app = appOpt.fold(new Exception(s"There is no app $name").asLeft[App])(
+        _.asRight)
     } yield app
 
   private def status(appName: String,
@@ -231,7 +236,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
                   params: (String, String)*): EitherT[F, Throwable, Json] =
     Backoff.default.retry(
       sttp
-        .get(peer.RpcUri.path(path).params(params : _*))
+        .get(peer.RpcUri.path(path).params(params: _*))
         .send[EitherT[F, Throwable, ?]]
         .subflatMap(
           _.body
@@ -245,7 +250,7 @@ class AppRegistry[F[_]: Monad: Concurrent: ContextShift: Timer: LiftIO](
     )
 
   private def ipfsFetch(hash: ByteVector,
-                      dest: Path): EitherT[F, IpfsError, Unit] = {
+                        dest: Path): EitherT[F, IpfsError, Unit] = {
     ipfsStore
       .fetch(hash)
       .flatMap(
@@ -267,6 +272,6 @@ object AppRegistry {
                                         fs2.Stream[F, ByteBuffer]])
     : F[AppRegistry[F]] =
     for {
-      ref <- Ref.of[F, Map[String, Deferred[F, App]]](Map.empty)
+      ref <- Ref.of[F, Map[String, TryableDeferred[F, App]]](Map.empty)
     } yield new AppRegistry[F](ipfsStore, runner, ref)
 }

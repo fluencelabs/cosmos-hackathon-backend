@@ -32,8 +32,8 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
 
   val ContainerImage = "folexflu/cosmos-runner"
 
-  private def nextPortThousand =
-    lastPort.modify(p => (p + 1 toShort, p * 1000 toShort))
+  private def nextPort =
+    lastPort.modify(p => (p + 3 toShort, p))
 
   private def dockerCmd(name: String,
                         peer: String,
@@ -42,13 +42,12 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
                         binaryPath: Path,
                         genesisPath: Path) =
     for {
-      portThousand <- nextPortThousand
-
+      port <- nextPort
       cmd = DockerParams
         .build()
-        .port(30656 + portThousand toShort, 26656)
-        .port(30657 + portThousand toShort, 26657)
-        .port(30658 + portThousand toShort, 26658)
+        .port(port, 26656)
+        .port(port + 1 toShort, 26657)
+        .port(port + 2 toShort, 26658)
         .option("--name", s"fisherman-$name")
         .option("-e", s"PEER=$peer")
         .option("-e", s"RPCPORT=$rpcPort")
@@ -193,9 +192,11 @@ case class Runner[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent](
         errors)
     } yield stream
   }
+
+  def setLastPort(port: Short): F[Unit] = lastPort.update(cp => math.max(cp, port).toShort)
 }
 
 object Runner {
   def make[F[_]: Monad: LiftIO: ContextShift: Defer: Concurrent]: F[Runner[F]] =
-    Ref.of[F, Short](0).map(new Runner(_))
+    Ref.of[F, Short](30000).map(new Runner(_))
 }
