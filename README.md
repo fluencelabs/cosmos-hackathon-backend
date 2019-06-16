@@ -1,4 +1,3 @@
-# Shared Security for Cosmos Zones 
 ![logo](img/salmon.png)
 
 - Backend here
